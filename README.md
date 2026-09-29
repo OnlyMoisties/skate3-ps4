@@ -308,11 +308,49 @@ config/         settings.toml (the PS4 profile packed into every pkg)
 
 ## Credits
 
-- [mchughalex/skate3recomp](https://github.com/mchughalex/skate3recomp) and the ReXGlue SDK — the
-  PC recompilation this is built on.
-- Xenia — the runtime ReXGlue derives from.
-- OpenOrbis, orbis-ports (orbis-compat, Mesa RADV for PS4), GoldHEN.
-- FFmpeg (XMA + VP6), rpmalloc (public domain, Mattias Jansson).
-- EA Black Box for Skate 3. This project ships no game content; bring your own legally owned copy.
+This port stands on a lot of other people's work. Everything below is what the build actually uses.
+
+**The game port it's based on**
+
+| Project | Used for | Licence |
+|---|---|---|
+| [mchughalex/skate3recomp](https://github.com/mchughalex/skate3recomp) | The PC static recompilation of Skate 3 I ported: codegen config, native scene renderer, game hooks, installers | see upstream |
+| [mchughalex/rexglue-skate3](https://github.com/mchughalex/rexglue-skate3) (ReXGlue SDK, © Tom Clay) | The recompilation runtime: Xbox kernel HLE, GPU command processor, audio, filesystem, codegen | BSD-3-Clause |
+| [Xenia](https://github.com/xenia-project/xenia) (© Ben Vanik and contributors) | ReXGlue is derived from it | BSD-3-Clause |
+
+**PS4 toolchain and graphics**
+
+| Project | Used for | Licence |
+|---|---|---|
+| [OpenOrbis PS4 Toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain) v0.5.4 | SDK headers/stubs, create-eboot, create-gp4, PkgTool, libc/libSceFios2 prx | GPL-3.0 (tools), per component |
+| [OpenOrbis musl](https://github.com/OpenOrbis/musl) | The C library | MIT |
+| [orbis-ports/orbis-compat](https://github.com/orbis-ports/orbis-compat) and [orbis-porting-kit](https://github.com/orbis-ports/orbis-porting-kit) | The `orbis-sdk-v1` bundle: corrected headers, CMake toolchain, the static Vulkan loader | MIT |
+| [Mesa](https://gitlab.freedesktop.org/mesa/mesa) (RADV, orbis-ports PS4 build) | The Vulkan driver on the PS4 GPU, and the headless-surface WSI that flips through sceVideoOut | MIT |
+| [LLVM](https://github.com/llvm/llvm-project) 22.1.8 (clang, lld, libc++, libc++abi) | The compiler, and the libc++ I built for the PS4 (patch in `patches/llvm-libcxx.patch`) | Apache-2.0 WITH LLVM-exception |
+
+**Libraries inside the runtime**
+
+| Project | Used for | Licence |
+|---|---|---|
+| [FFmpeg](https://ffmpeg.org) | XMA audio (Xenia's xmaframes decoder) and VP6 video decoding | LGPL-2.1+ |
+| [rpmalloc](https://github.com/mjansson/rpmalloc) 1.4.5 (Mattias Jansson) | The process-wide malloc on the PS4 | Public domain / MIT |
+| [glslang](https://github.com/KhronosGroup/glslang), [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) | Shader translation | BSD / Apache-2.0 |
+| [Dear ImGui](https://github.com/ocornut/imgui) | Runtime overlays (FPS counter, dialogs) | MIT |
+| [SIMDe](https://github.com/simd-everywhere/simde) | VMX128 vector emulation in the recompiled code | MIT |
+| [spdlog](https://github.com/gabime/spdlog), [{fmt}](https://github.com/fmtlib/fmt), [toml++](https://github.com/marzer/tomlplusplus), [VMA](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator), [volk](https://github.com/zeux/volk), [snappy](https://github.com/google/snappy), [xxHash](https://github.com/Cyan4973/xxHash), [libmspack](https://github.com/kyz/libmspack) | Logging, config, Vulkan memory, compression, hashing, XEX decompression | per project |
+
+**Console side and packaging**
+
+| Project | Used for |
+|---|---|
+| [GoldHEN](https://github.com/GoldHEN/GoldHEN) | The homebrew enabler: pkg installs, FTP, klog |
+| [LibOrbisPkg / PkgTool](https://github.com/maxton/LibOrbisPkg) | Building the normal pkg |
+| Sony publishing tools (orbis-pub-cmd 3.87, community-patched) | Building the 6 GB AIO pkg |
+
+**The game**
+
+Skate 3 © Electronic Arts, developed by EA Black Box. This project contains no game files, no
+recompiled game code and no saves — you need your own legally owned copy. Not affiliated with EA
+or Sony.
 
 — XeMoisties · CyprusNetwork
