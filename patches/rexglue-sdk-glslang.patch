@@ -1,0 +1,19 @@
+diff --git a/glslang/CMakeLists.txt b/glslang/CMakeLists.txt
+index 1c7d22a..2f497f3 100644
+--- a/glslang/CMakeLists.txt
++++ b/glslang/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-# Copyright (C) 2020 The Khronos Group Inc.
++﻿# Copyright (C) 2020 The Khronos Group Inc.
+ #
+ # All rights reserved.
+ #
+@@ -33,7 +33,7 @@
+ 
+ if(WIN32)
+     add_subdirectory(OSDependent/Windows)
+-elseif(UNIX)
++elseif(UNIX OR PS4)  # ps4 port: pthreads, as on Unix
+     add_subdirectory(OSDependent/Unix)
+ else(WIN32)
+     message("unknown platform")

@@ -1,0 +1,37 @@
+# Skate 3 PS4 profile (ps4 port). The desktop defaults - 2x resolution, 4x MSAA, 4096 shadow
+# maps, SSAO - ask for more GPU memory than RADV's PS4 heaps have (a 2 GB resolve buffer at 2x).
+audio_mute = false
+draw_resolution_scale_x = 1
+draw_resolution_scale_y = 1
+fullscreen = true
+hid_rumble_enabled = true
+menu_chord = 'rb+start'
+mnk_capture_mouse = false
+mnk_mode = false
+resolution_scale = 1
+show_fps_counter = true
+skate3_draw_distance_scale = 1.0
+skate3_draw_distance_stream_probe = 0.0
+skate3_field_of_view = 60.0
+skate3_guest_fps_cap = 0.0
+skate3_guest_fps_cap_auto = false
+skate3_lod_distance_scale = 1.0
+skate3_native_render_mode_indicator = false
+skate3_native_render_scene = true
+skate3_native_render_scene_bloom = true
+skate3_native_render_scene_haze = true
+skate3_native_render_scene_msaa = 1
+skate3_native_render_scene_shadow_pcss = false
+skate3_native_render_scene_shadow_static_casters = true
+skate3_native_render_scene_shadow_static_size = 1024
+skate3_native_render_scene_shadow_tile = 0
+skate3_native_render_scene_shadows = true
+skate3_native_render_scene_shafts = false
+skate3_native_render_scene_ssao = false
+skate3_ultrawide = false
+user_language = 1
+vsync = true
+vulkan_allow_present_mode_fifo_relaxed = false
+vulkan_allow_present_mode_immediate = false
+vulkan_allow_present_mode_mailbox = false
+skate3_native_render_scene_smooth_camera = false

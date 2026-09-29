@@ -1,0 +1,648 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 07972e0..64a3ef6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -11,7 +11,7 @@ if(SKATE3_STATIC_MSVC_RUNTIME)
+     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+ endif()
+ 
+-project(skate3 VERSION 2.0.0 LANGUAGES CXX)
++project(skate3 VERSION 2.0.0 LANGUAGES C CXX)
+ 
+ if(WIN32)
+     enable_language(RC)
+@@ -93,7 +93,18 @@ option(SKATE3_ENABLE_X86_64_V3
+     "Build x86_64 desktop binaries for x86-64-v3 CPUs (AVX2/BMI2)"
+     OFF)
+ 
+-if(NOT APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
++if(PS4)
++    # Jaguar (btver2): AVX1/F16C/BMI1, no AVX2/BMI2/FMA. Snappy stays scalar.
++    add_compile_options(-march=btver2)
++    # std::fma is a plain function on Jaguar (no FMA unit); rex/ppc/intrinsics.h gives an inline
++    # multiply-add that the compiler may only use when fma is not treated as a builtin.
++    add_compile_options(-fno-builtin-fma -fno-builtin-fmaf)
++    set(SNAPPY_REQUIRE_AVX OFF CACHE BOOL "" FORCE)
++    set(SNAPPY_REQUIRE_AVX2 OFF CACHE BOOL "" FORCE)
++    set(SNAPPY_HAVE_SSSE3 1 CACHE INTERNAL "" FORCE)
++    set(SNAPPY_HAVE_X86_CRC32 1 CACHE INTERNAL "" FORCE)
++    set(SNAPPY_HAVE_BMI2 0 CACHE INTERNAL "" FORCE)
++elseif(NOT APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+     if(SKATE3_ENABLE_X86_64_V3)
+         if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+             add_compile_options(-march=x86-64-v3)
+@@ -237,7 +248,10 @@ if(WIN32)
+ endif()
+ 
+ include(cmake/RexGlue.cmake)
+-include(cmake/CodegenTargets.cmake)
++if(NOT PS4)
++    # Codegen runs on the host; the PS4 build compiles the generated/ tree it left behind.
++    include(cmake/CodegenTargets.cmake)
++endif()
+ 
+ set(SKATE3_COMMON_SOURCES
+     src/exception_compat.cpp
+@@ -266,6 +280,10 @@ set(SKATE3_COMMON_SOURCES
+ if(APPLE)
+     list(APPEND SKATE3_COMMON_SOURCES src/skate3_iso_installer_macos.mm)
+ endif()
++if(PS4)
++    # The runtime is linked statically on the console and already carries sha256.cpp.
++    list(REMOVE_ITEM SKATE3_COMMON_SOURCES third_party/rexglue-sdk/thirdparty/crypto/sha256.cpp)
++endif()
+ 
+ set(SKATE3_SOURCES
+     src/main.cpp
+@@ -354,7 +372,20 @@ else()
+     message(STATUS "generated/eawebkit/sources.cmake not found; run the generate-all target before building skate3")
+ endif()
+ 
+-target_link_libraries(skate3 PRIVATE rex::runtime)
++if(PS4)
++    # The runtime is a static archive on the console. Its kernel/XAM exports register themselves
++    # from static constructors in files nothing else references, so a normal archive link drops
++    # them and GetProcAddressByOrdinal finds "no native implementation" (run 8: the XamParty*
++    # exports - and the game then called through the null it got back). Keep every member.
++    # ONE token: CMake de-duplicates repeated identical link flags, so a separate
++    # "-Wl,--whole-archive" here swallowed the one ps4-vkloader wraps RADV in, and half of RADV
++    # went missing (run 9: a null call inside mesa_log). rex::runtime after it brings the
++    # runtime's own dependencies; its members are all defined already, so nothing duplicates.
++    target_link_libraries(skate3 PRIVATE
++        "-Wl,--whole-archive,$<TARGET_FILE:rexruntime>,--no-whole-archive" rex::runtime)
++else()
++    target_link_libraries(skate3 PRIVATE rex::runtime)
++endif()
+ rexglue_configure_target(skate3)
+ 
+ if(APPLE)
+@@ -366,6 +397,24 @@ if(WIN32)
+     target_link_libraries(skate3 PRIVATE comdlg32 winhttp d3dcompiler gdiplus)
+ endif()
+ 
++if(PS4)
++    # The Vulkan C ABI over the bundle's static RADV, plus the system modules the platform layer
++    # calls. The eboot is the only artefact; the runtime is linked in statically.
++    get_filename_component(SKATE3_ORBIS_BUNDLE "${ORBIS_COMPAT_DIR}/.." ABSOLUTE)
++    set(ORBIS_MESA_SRC "${SKATE3_ORBIS_BUNDLE}/mesa" CACHE PATH "" FORCE)
++    set(ORBIS_MESA_BUILD "${SKATE3_ORBIS_BUNDLE}/mesa/build-orbis" CACHE PATH "" FORCE)
++    add_subdirectory("${ORBIS_COMPAT_DIR}/vkloader" ps4-vkloader)
++    target_link_libraries(skate3 PRIVATE ps4-vkloader
++        -lSceVideoOut -lScePad -lSceAudioOut -lSceUserService -lSceSystemService
++        -lSceSysmodule -lSceImeDialog -lSceCommonDialog -lSceNet)
++    # NOT -lSceLibcInternal: it exports fopen & co. with Sony's FILE layout, and a stream opened
++    # by it and written by musl's fwrite calls through a null pointer (measured, run 3).
++    target_compile_definitions(skate3 PRIVATE REX_PS4_DATA_DIR="/data/skate3")
++    # FMV through FFmpeg's VP6 decoder (src/skate3_ps4_vp6.cpp).
++    target_sources(skate3 PRIVATE src/skate3_ps4_vp6.cpp)
++    target_link_libraries(skate3 PRIVATE libavcodec libavutil)
++    ps4_create_eboot(skate3)
++else()
+ add_custom_target(skate3_stage_runtime_library
+     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:skate3>"
+     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+@@ -375,8 +424,9 @@ add_custom_target(skate3_stage_runtime_library
+     VERBATIM
+ )
+ add_dependencies(skate3 skate3_stage_runtime_library)
++endif()
+ 
+-if(NOT SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE STREQUAL "")
++if(NOT PS4 AND NOT SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE STREQUAL "")
+     add_custom_target(skate3_stage_title_update_patches
+         COMMAND ${CMAKE_COMMAND} -E make_directory
+             "$<TARGET_FILE_DIR:skate3>/game/data/webkit"
+diff --git a/src/skate3_app_common.cpp b/src/skate3_app_common.cpp
+index a9126bf..bfc43b1 100644
+--- a/src/skate3_app_common.cpp
++++ b/src/skate3_app_common.cpp
+@@ -419,6 +419,28 @@ void LoadAndNormalizeSimpleSettings(const std::filesystem::path& settings_path,
+   } else {
+     ApplyFirstRunVideoDefaults(settings_path, developer_config_path);
+   }
++#if defined(__PS4__)
++  // Whatever a settings file or profile says (a fresh console gets the desktop defaults: 2x
++  // resolution wants a 2 GB resolve buffer and crashed at boot), these stay within what the
++  // console's memory and GPU can take. Player choices (FPS counter, audio, ...) are untouched.
++  static constexpr std::pair<std::string_view, std::string_view> kPs4Forced[] = {
++      {"resolution_scale", "1"},
++      {"draw_resolution_scale_x", "1"},
++      {"draw_resolution_scale_y", "1"},
++      {"skate3_draw_distance_scale", "1.0"},
++      {"skate3_lod_distance_scale", "1.0"},
++      {"skate3_native_render_scene_msaa", "1"},
++      {"skate3_native_render_scene_ssao", "false"},
++      {"skate3_native_render_scene_shafts", "false"},
++      {"skate3_native_render_scene_shadow_pcss", "false"},
++      {"skate3_native_render_scene_shadow_static_size", "1024"},
++      {"skate3_native_render_scene_smooth_camera", "false"},
++      {"skate3_guest_fps_cap_auto", "false"},
++  };
++  for (const auto& [name, value] : kPs4Forced) {
++    rex::cvar::SetFlagByName(name, value);
++  }
++#endif
+   rex::ui::EnsureSimpleSettingsConfig(settings_path);
+ }
+ 
+diff --git a/src/skate3_iso_installer.cpp b/src/skate3_iso_installer.cpp
+index a893a3a..59db265 100644
+--- a/src/skate3_iso_installer.cpp
++++ b/src/skate3_iso_installer.cpp
+@@ -27,6 +27,8 @@
+ 
+ #include <rex/ui/window_win.h>
+ #elif defined(__APPLE__)
++#elif defined(__ORBIS__)
++// PS4: no desktop file dialogs; the game and title update are staged under /data/skate3.
+ #else
+ #include <gtk/gtk.h>
+ #endif
+@@ -104,6 +106,10 @@ std::filesystem::path PickIsoFile() {
+ std::filesystem::path PickIsoFile() {
+   return skate3::PickIsoFileMacOS();
+ }
++#elif defined(__ORBIS__)
++std::filesystem::path PickIsoFile() {
++  return {};  // nothing to pick on the console
++}
+ #else
+ std::filesystem::path PickIsoFile() {
+   GtkWidget* dialog = gtk_file_chooser_dialog_new(
+@@ -486,7 +492,7 @@ bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context
+     if (window) {
+       window->RequestPaint();
+     }
+-#if !defined(__APPLE__)
++#if !defined(__APPLE__) && !defined(__ORBIS__)
+     while (gtk_events_pending()) {
+       gtk_main_iteration_do(FALSE);
+     }
+diff --git a/src/skate3_native_render.cpp b/src/skate3_native_render.cpp
+index 29d39f1..3b3dd7e 100644
+--- a/src/skate3_native_render.cpp
++++ b/src/skate3_native_render.cpp
+@@ -18,6 +18,12 @@
+ #include <thread>
+ #include <vector>
+ 
++#if defined(__PS4__)
++#include <sched.h>
++#include <unistd.h>
++#include <x86intrin.h>
++#endif
++
+ #if defined(_WIN32)
+ #include <windows.h>
+ #endif
+@@ -62,6 +68,23 @@ REXCVAR_DEFINE_BOOL(skate3_guest_fps_cap_auto, true, "Skate 3",
+                     "refresh is known.")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++#if defined(__PS4__)
++REXCVAR_DEFINE_BOOL(skate3_ps4_vsync_30, false, "Skate 3",
++                    "PS4: lock the game to 30 fps in step with the TV - the display flips every "
++                    "second refresh and each guest frame waits for the previous one to reach the "
++                    "screen, so every frame is on screen for exactly 33.3 ms (the Xbox 360 "
++                    "game's own rate). Off: uncapped up to the 60 Hz refresh.")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++extern "C" {
++int32_t sceVideoOutSetFlipRate(int32_t handle, int32_t rate);
++int32_t sceVideoOutGetFlipStatus(int32_t handle, void* status);
++}
++namespace rex::ui::ps4_stats {
++extern std::atomic<uint64_t> paint_finished;
++}
++#endif
++
+ namespace skate3::native_render {
+ namespace {
+ 
+@@ -231,7 +254,49 @@ void OnClothDraw(uint8_t* base, uint32_t r4, uint32_t r5, uint32_t r6, uint32_t
+ // render thread at the swap boundary. Absolute-schedule pacing (target +=
+ // interval) so sleep jitter never accumulates; resyncs when the guest falls
+ // more than one interval behind (loads, hitches).
++#if defined(__PS4__)
++// The video-out handle is the swapchain's (mesa's WSI opens it and pins 60 Hz on every swapchain
++// creation), so find the open one and set its rate; re-applied now and then in case a new
++// swapchain reset it.
++void Ps4SetFlipRate(int32_t rate) {
++  alignas(8) uint8_t status[64];
++  for (int32_t handle = 0; handle < 16; ++handle) {
++    if (sceVideoOutGetFlipStatus(handle, status) == 0) {
++      sceVideoOutSetFlipRate(handle, rate);
++    }
++  }
++}
++
++// Lockstep with the display: at 30 Hz flips each guest frame waits until the previous one has
++// been presented, so frames alternate neither 1 nor 3 refreshes but always 2.
++bool Ps4PaceToDisplay() {
++  static bool s_locked = false;
++  static uint32_t s_frames = 0;
++  static uint64_t s_last_paint = 0;
++  const bool want = REXCVAR_GET(skate3_ps4_vsync_30);
++  if (want != s_locked || (want && (s_frames++ % 120) == 0)) {
++    Ps4SetFlipRate(want ? 1 : 0);  // 1 = 30 Hz, 0 = 60 Hz
++    s_locked = want;
++  }
++  if (!want) {
++    return false;
++  }
++  const auto start = std::chrono::steady_clock::now();
++  while (rex::ui::ps4_stats::paint_finished.load(std::memory_order_acquire) == s_last_paint &&
++         std::chrono::steady_clock::now() - start < std::chrono::milliseconds(50)) {
++    usleep(500);
++  }
++  s_last_paint = rex::ui::ps4_stats::paint_finished.load(std::memory_order_acquire);
++  return true;
++}
++#endif
++
+ void PaceGuestFrame() {
++#if defined(__PS4__)
++  if (Ps4PaceToDisplay()) {
++    return;
++  }
++#endif
+   double cap = REXCVAR_GET(skate3_guest_fps_cap);
+   if (REXCVAR_GET(skate3_guest_fps_cap_auto)) {
+     // Refresh-derived cap (see the cvar). Falls through to the explicit cap
+@@ -844,6 +909,63 @@ extern "C" REX_FUNC(sub_82B78FF0) {
+   __imp__sub_82B78FF0(ctx, base);
+ }
+ 
++#if defined(__PS4__)
++// One poll of the D3D wait-for-GPU loop (ring-buffer space / fence; returns 1 while the caller
++// should keep waiting). On the Xbox 360 its db16cyc instructions pause the hardware thread; the
++// recompile turns them into nothing, so the render thread spun flat out on a core the GPU command
++// thread needed (~18% of the render thread in gameplay). Back off progressively within a wait:
++// pause instructions, then yield the core, then short sleeps if the wait drags on.
++extern "C" REX_FUNC(sub_82B76080) {
++  __imp__sub_82B76080(ctx, base);
++  if (ctx.r3.u32 == 0) {
++    return;
++  }
++  thread_local uint64_t s_last_tsc = 0;
++  thread_local uint32_t s_polls = 0;
++  const uint64_t now = __rdtsc();
++  if (now - s_last_tsc > 1600000) {  // ~1 ms at 1.6 GHz since the last poll: a new wait
++    s_polls = 0;
++  }
++  s_last_tsc = now;
++  const uint32_t polls = ++s_polls;
++  if (polls < 32) {
++    for (int i = 0; i < 8; ++i) _mm_pause();
++  } else if (polls < 64) {
++    sched_yield();
++  } else {
++    usleep(50);
++  }
++}
++#endif
++
++#if defined(__PS4__)
++// The job system's "claim a job" (called through its function table): returns 0 when the queue
++// has nothing to claim. The main thread calls it in a loop while it waits for the workers, which
++// on the PS4 took ~25% of a core it shares with them. Same progressive back-off as the D3D wait.
++extern "C" REX_FUNC(sub_8290AFA0) {
++  __imp__sub_8290AFA0(ctx, base);
++  thread_local uint64_t s_last_tsc = 0;
++  thread_local uint32_t s_misses = 0;
++  if (ctx.r3.u32 != 0) {
++    s_misses = 0;
++    return;
++  }
++  const uint64_t now = __rdtsc();
++  if (now - s_last_tsc > 1600000) {  // ~1 ms since the last empty poll: a new wait
++    s_misses = 0;
++  }
++  s_last_tsc = now;
++  const uint32_t misses = ++s_misses;
++  if (misses < 16) {
++    for (int i = 0; i < 8; ++i) _mm_pause();
++  } else if (misses < 128) {
++    sched_yield();
++  } else {
++    usleep(20);
++  }
++}
++#endif
++
+ // D3DDevice_DrawIndexedVertices: post-call, the draw's VS constants are now
+ // in the shadow bank; refresh any pending skinned item bound to these
+ // buffers (deferred multi-pass meshes only draw here).
+diff --git a/src/skate3_native_scene.cpp b/src/skate3_native_scene.cpp
+index 5a7672b..ca22897 100644
+--- a/src/skate3_native_scene.cpp
++++ b/src/skate3_native_scene.cpp
+@@ -4698,12 +4698,19 @@ void OnDrawDone(uint8_t* base, uint32_t func, uint32_t r4, uint32_t r5, uint32_t
+             if (obj < 0x10000 || !GuestReadableApprox(base, obj)) {
+               return false;
+             }
++            static std::unordered_map<uint32_t, bool> cache;
++            auto it = cache.find(obj);
++            if (it != cache.end()) {
++              return it->second;
++            }
+             char text[120] = {};
+             for (int k = 0; k < 119; ++k) {
+               text[k] = char(REX_LOAD_U8(obj + 0x54 + k));
+               if (text[k] == '\0') break;
+             }
+-            return std::strstr(text, "\\flowingwateralpha") != nullptr;
++            const bool hit = std::strstr(text, "\\flowingwateralpha") != nullptr;
++            cache.emplace(obj, hit);
++            return hit;
+           };
+           return check(g_cur_ps_obj.load(std::memory_order_relaxed)) ||
+                  check(g_cur_vs_obj.load(std::memory_order_relaxed));
+@@ -4764,12 +4771,19 @@ void OnDrawDone(uint8_t* base, uint32_t func, uint32_t r4, uint32_t r5, uint32_t
+             if (obj < 0x10000 || !GuestReadableApprox(base, obj)) {
+               return false;
+             }
++            static std::unordered_map<uint32_t, bool> cache;
++            auto it = cache.find(obj);
++            if (it != cache.end()) {
++              return it->second;
++            }
+             char text[120] = {};
+             for (int k = 0; k < 119; ++k) {
+               text[k] = char(REX_LOAD_U8(obj + 0x54 + k));
+               if (text[k] == '\0') break;
+             }
+-            return std::strstr(text, "\\scrollincandescent") != nullptr;
++            const bool hit = std::strstr(text, "\\scrollincandescent") != nullptr;
++            cache.emplace(obj, hit);
++            return hit;
+           };
+           return check(g_cur_ps_obj.load(std::memory_order_relaxed)) ||
+                  check(g_cur_vs_obj.load(std::memory_order_relaxed));
+@@ -4802,12 +4816,20 @@ void OnDrawDone(uint8_t* base, uint32_t func, uint32_t r4, uint32_t r5, uint32_t
+             if (obj < 0x10000 || !GuestReadableApprox(base, obj)) {
+               return false;
+             }
++            static std::unordered_map<uint64_t, bool> cache;
++            const uint64_t key = (uint64_t(obj) << 32) ^ uint64_t(uintptr_t(needle));
++            auto it = cache.find(key);
++            if (it != cache.end()) {
++              return it->second;
++            }
+             char text[120] = {};
+             for (int k = 0; k < 119; ++k) {
+               text[k] = char(REX_LOAD_U8(obj + 0x54 + k));
+               if (text[k] == '\0') break;
+             }
+-            return std::strstr(text, needle) != nullptr;
++            const bool hit = std::strstr(text, needle) != nullptr;
++            cache.emplace(key, hit);
++            return hit;
+           };
+           return check(g_cur_ps_obj.load(std::memory_order_relaxed)) ||
+                  check(g_cur_vs_obj.load(std::memory_order_relaxed));
+diff --git a/src/skate3_ps4_vp6.cpp b/src/skate3_ps4_vp6.cpp
+new file mode 100644
+index 0000000..2a39965
+--- /dev/null
++++ b/src/skate3_ps4_vp6.cpp
+@@ -0,0 +1,204 @@
++// PS4: Skate 3's FMV (EA .vp6, VP6 1280x720) decoded by FFmpeg instead of the game's own
++// decoder. The recompiled VMX128 decoder (sub_82AF4B58 under sub_82AF3488) needed three
++// Jaguar cores and still dropped to a few fps; FFmpeg's C VP6 decoder is a fraction of that.
++//
++// Hook point: VideoDecoder_Vp6::Decode (vtable 0x8231B62C slot +16), called by the
++// "MoviePlayer2 Decode Thread" once per compressed video chunk (MV0K/MV0F payload):
++//   r3 = decoder, r4 = payload, r5 = size, r6 = frame index,
++//   r7 = callback 0x82A8F120, r8/r9 = its arguments (packet, MovieDecoder).
++// The callback releases the packet (frees its bytes) and returns a free VideoRenderable R, whose
++// Y/U/V destinations are R+8/+12/+16 (or one I420 block at R+8 when R+80 == 1) with pitches
++// R+40/+44/+48, format R+72 (3/4 = planar), frame index R+76 and ready byte R+88. Nothing outside
++// the game's VP6 code reads its own decoder state, so all of it is bypassed.
++//
++// VP6 stores frames bottom-up. FFmpeg's VP6 decoder returns them upright; the game's decoder did
++// not and the renderer flips at draw time (R+109), so rows are written in reverse.
++
++#if defined(__PS4__)
++
++#include "generated/skate3_init.h"
++
++#include <cstdint>
++#include <cstring>
++#include <mutex>
++#include <unordered_map>
++
++#include <rex/cvar.h>
++#include <rex/logging.h>
++
++extern "C" {
++#include <libavcodec/avcodec.h>
++#include <libavutil/frame.h>
++}
++
++REXCVAR_DEFINE_BOOL(skate3_ps4_native_vp6, true, "Skate 3",
++                    "PS4: decode FMV (EA VP6 movies) with FFmpeg instead of the game's "
++                    "recompiled decoder, which is too slow on the console's CPU.")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++namespace {
++
++struct Vp6Stream {
++  AVCodecContext* codec = nullptr;
++  AVFrame* frame = nullptr;
++  AVPacket* packet = nullptr;
++  int64_t last_index = -2;
++  bool need_keyframe = true;
++  bool logged = false;
++  bool frame_valid = false;
++};
++
++std::mutex g_streams_mutex;
++std::unordered_map<uint32_t, Vp6Stream*> g_streams;
++
++void FreeStream(Vp6Stream* s) {
++  if (!s) return;
++  av_packet_free(&s->packet);
++  av_frame_free(&s->frame);
++  avcodec_free_context(&s->codec);
++  delete s;
++}
++
++Vp6Stream* GetStream(uint32_t decoder) {
++  std::lock_guard<std::mutex> lock(g_streams_mutex);
++  auto it = g_streams.find(decoder);
++  if (it != g_streams.end()) return it->second;
++  const AVCodec* vp6 = avcodec_find_decoder(AV_CODEC_ID_VP6);
++  if (!vp6) return nullptr;
++  auto* s = new Vp6Stream();
++  s->codec = avcodec_alloc_context3(vp6);
++  s->frame = av_frame_alloc();
++  s->packet = av_packet_alloc();
++  if (!s->codec || !s->frame || !s->packet) {
++    FreeStream(s);
++    return nullptr;
++  }
++  s->codec->thread_count = 1;  // already on the game's own decode thread
++  if (avcodec_open2(s->codec, vp6, nullptr) < 0) {
++    FreeStream(s);
++    return nullptr;
++  }
++  g_streams.emplace(decoder, s);
++  return s;
++}
++
++void ForgetStream(uint32_t decoder) {
++  Vp6Stream* s = nullptr;
++  {
++    std::lock_guard<std::mutex> lock(g_streams_mutex);
++    auto it = g_streams.find(decoder);
++    if (it == g_streams.end()) return;
++    s = it->second;
++    g_streams.erase(it);
++  }
++  FreeStream(s);
++}
++
++// Rows reversed (see the header comment).
++void CopyPlane(uint8_t* dst, uint32_t dst_pitch, const uint8_t* src, int src_pitch, int width,
++               int height) {
++  for (int y = 0; y < height; ++y) {
++    std::memcpy(dst + size_t(y) * dst_pitch, src + size_t(height - 1 - y) * src_pitch,
++                size_t(width));
++  }
++}
++
++}  // namespace
++
++// VideoDecoder_Vp6::Decode
++extern "C" REX_FUNC(sub_82AA7218) {
++  if (!REXCVAR_GET(skate3_ps4_native_vp6)) {
++    __imp__sub_82AA7218(ctx, base);
++    return;
++  }
++  const uint32_t self = ctx.r3.u32;
++  const uint32_t data = ctx.r4.u32;
++  const uint32_t size = ctx.r5.u32;
++  const int32_t index = ctx.r6.s32;
++  const uint32_t callback = ctx.r7.u32;
++  const uint32_t cb_arg0 = ctx.r8.u32;
++  const uint32_t cb_arg1 = ctx.r9.u32;
++  REX_STORE_U32(self + 8, uint32_t(index));
++
++  Vp6Stream* s = GetStream(self);
++  bool have_frame = false;
++  if (s && size > 0 && size < (64u << 20)) {
++    const uint8_t* payload = reinterpret_cast<const uint8_t*>(REX_RAW_ADDR(data));
++    const bool keyframe = (payload[0] & 0x80) == 0;
++    if (index == 0 || index != s->last_index + 1) {
++      // A new movie on a reused decoder, or a seek: restart at the next keyframe.
++      avcodec_flush_buffers(s->codec);
++      s->need_keyframe = true;
++    }
++    s->last_index = index;
++    if (keyframe) s->need_keyframe = false;
++    if (!s->need_keyframe && av_new_packet(s->packet, int(size)) == 0) {
++      std::memcpy(s->packet->data, payload, size);
++      if (avcodec_send_packet(s->codec, s->packet) == 0 &&
++          avcodec_receive_frame(s->codec, s->frame) == 0) {
++        have_frame = true;
++        s->frame_valid = true;
++      }
++      av_packet_unref(s->packet);
++    }
++    if (!s->logged && have_frame) {
++      s->logged = true;
++      REXLOG_INFO(
++          "PS4 VP6: decoder {:08X} ({}x{} guest, {}x{} FFmpeg, fmt {}), first frame {} "
++          "(key {}, {} bytes, mode byte {})",
++          self, REX_LOAD_U32(self + 12), REX_LOAD_U32(self + 16), s->frame->width,
++          s->frame->height, s->frame->format, index, keyframe, size, REX_LOAD_U8(self + 36));
++    }
++  }
++
++  // The callback consumes the packet and hands back the output VideoRenderable.
++  ctx.r3.u64 = cb_arg0;
++  ctx.r4.u64 = cb_arg1;
++  REX_CALL_INDIRECT_FUNC(callback);
++  const uint32_t r = ctx.r3.u32;
++
++  if (r != 0) {
++    const uint32_t format = REX_LOAD_U32(r + 72);
++    if (s && s->frame_valid && (format == 3 || format == 4) &&
++        s->frame->format == AV_PIX_FMT_YUV420P) {
++      const int w = s->frame->width;
++      const int h = s->frame->height;
++      uint32_t y_addr, u_addr, v_addr, y_pitch, u_pitch, v_pitch;
++      if (REX_LOAD_U32(r + 80) == 1) {
++        y_addr = REX_LOAD_U32(r + 8);
++        u_addr = y_addr + uint32_t(w * h);
++        v_addr = y_addr + uint32_t(w * h * 5 / 4);
++        y_pitch = uint32_t(w);
++        u_pitch = v_pitch = uint32_t(w / 2);
++      } else {
++        y_addr = REX_LOAD_U32(r + 8);
++        u_addr = REX_LOAD_U32(r + 12);
++        v_addr = REX_LOAD_U32(r + 16);
++        y_pitch = REX_LOAD_U32(r + 40);
++        u_pitch = REX_LOAD_U32(r + 44);
++        v_pitch = REX_LOAD_U32(r + 48);
++      }
++      if (y_addr && u_addr && v_addr && y_pitch >= uint32_t(w) && u_pitch >= uint32_t(w / 2) &&
++          v_pitch >= uint32_t(w / 2)) {
++        CopyPlane(reinterpret_cast<uint8_t*>(REX_RAW_ADDR(y_addr)), y_pitch, s->frame->data[0], s->frame->linesize[0], w, h);
++        CopyPlane(reinterpret_cast<uint8_t*>(REX_RAW_ADDR(u_addr)), u_pitch, s->frame->data[1], s->frame->linesize[1], w / 2,
++                  h / 2);
++        CopyPlane(reinterpret_cast<uint8_t*>(REX_RAW_ADDR(v_addr)), v_pitch, s->frame->data[2], s->frame->linesize[2], w / 2,
++                  h / 2);
++        REX_STORE_U32(r + 56, uint32_t(w));
++        REX_STORE_U32(r + 60, uint32_t(h));
++      }
++    }
++    REX_STORE_U32(r + 76, uint32_t(index));
++    REX_STORE_U8(r + 88, 1);
++  }
++  ctx.r3.u64 = 1;
++}
++
++// VideoDecoder_Vp6::Shutdown: drop our FFmpeg state with the guest's.
++extern "C" REX_FUNC(sub_82AA7098) {
++  ForgetStream(ctx.r3.u32);
++  __imp__sub_82AA7098(ctx, base);
++}
++
++#endif  // __PS4__
+diff --git a/src/skate3_title_update_installer.cpp b/src/skate3_title_update_installer.cpp
+index e457794..d643a72 100644
+--- a/src/skate3_title_update_installer.cpp
++++ b/src/skate3_title_update_installer.cpp
+@@ -34,6 +34,10 @@
+ #include <rex/ui/window_win.h>
+ #elif defined(__APPLE__)
+ #include <sys/wait.h>
++#elif defined(__ORBIS__)
++// PS4: no desktop file dialogs, and std::system (the curl download) fails cleanly; the title
++// update is staged under /data/skate3.
++#include <sys/wait.h>
+ #else
+ #include <sys/wait.h>
+ 
+@@ -610,6 +614,10 @@ std::filesystem::path PickTitleUpdateFile() {
+ std::filesystem::path PickTitleUpdateFile() {
+   return skate3::PickTitleUpdateFileMacOS();
+ }
++#elif defined(__ORBIS__)
++std::filesystem::path PickTitleUpdateFile() {
++  return {};  // nothing to pick on the console
++}
+ #else
+ std::filesystem::path PickTitleUpdateFile() {
+   GtkWidget* dialog = gtk_file_chooser_dialog_new(
+@@ -899,7 +907,7 @@ bool RunTitleUpdateInstallWizardBlocking(rex::ui::WindowedAppContext& app_contex
+     if (window) {
+       window->RequestPaint();
+     }
+-#if !defined(__APPLE__)
++#if !defined(__APPLE__) && !defined(__ORBIS__)
+     while (gtk_events_pending()) {
+       gtk_main_iteration_do(FALSE);
+     }
